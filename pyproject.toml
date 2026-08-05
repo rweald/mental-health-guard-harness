@@ -1,0 +1,89 @@
+[project]
+name = "mental-health-guard-harness"
+version = "0.0.1"
+description = "Research harness for training and evaluating turn-level safety classifiers on multi-turn mental health conversations."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# PEP 639: SPDX expression + explicit license files. No deprecated `License ::`
+# classifier — the two forms are mutually exclusive under PEP 639.
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+
+# Core: always installed, locally and in the container. API SDKs, data wrangling,
+# metrics, and stats. Deliberately torch-free.
+dependencies = [
+    "openai",       # also drives OpenRouter (GLM-4.6/5.2, DeepSeek) via base-URL swap
+    "anthropic",    # frontend CLM (clinician) role
+    "numpy",
+    "pandas",
+    "datasets",
+    "scipy",
+    "scikit-learn", # AUROC / ROC sweep / FPR@TPR
+    "statsmodels",  # agreement significance, CIs across seeds
+]
+
+[dependency-groups]
+# Modeling code under test. Installed locally (for CPU unit tests against tiny
+# dummy models) and in the container (for real 8B eval + LoRA fine-tune).
+# torch is intentionally NOT listed here: locally it comes from the `torch-cpu`
+# group; in the container it comes from the NGC base image.
+modeling = [
+    # Pin transformers/trl/peft to the GPU container's versions (docker/eval/Dockerfile)
+    # so local CPU tests validate the SAME API the real run uses — and so the Modal image
+    # (scripts/train/modal_finetune.py reads this group) stays in lockstep. One source of
+    # truth for the model-side stack; accelerate/datasets/torch are unpinned or per-env.
+    "transformers==5.14.1",
+    "trl==1.9.2",
+    "peft==0.20.0",
+    "accelerate",
+]
+
+# CPU torch, local only. Lets modeling code import and run on CPU so the full
+# test suite exercises log-prob extraction / scoring without a GPU. The container
+# skips this group and uses NGC's prebuilt CUDA torch instead.
+# NOTE: when we pick the NGC image, pin this to match its torch version.
+torch-cpu = [
+    "torch",
+]
+
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.uv]
+# asdf owns the interpreter version; uv must never fetch its own.
+python-preference = "only-system"
+python-downloads = "never"
+# Local `uv sync` installs everything needed to unit-test modeling code on CPU.
+# The container overrides with e.g. `uv sync --no-group torch-cpu`.
+default-groups = ["modeling", "torch-cpu", "dev"]
+
+# Pin torch to CPU wheels locally so we don't accidentally pull a heavy CUDA build.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[build-system]
+# >=1.27 for PEP 639 (`license` as an SPDX expression + `license-files`).
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mh_guard_harness"]
+
+# Configured explicitly rather than left to the backend's defaults, so what lands in an
+# sdist is a decision rather than whatever happens to be sitting in the working tree.
+[tool.hatch.build.targets.sdist]
+include = ["/src/mh_guard_harness", "/README.md", "/LICENSE", "/pyproject.toml"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
