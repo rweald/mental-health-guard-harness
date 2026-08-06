@@ -36,12 +36,11 @@ jobs:
 
       # uv is configured `python-preference = "only-system"` / `python-downloads =
       # "never"`, so the interpreter has to be on PATH before `uv sync` runs. Reading
-      # `.python-version` keeps CI on the exact patch release `.tool-versions` pins for
-      # asdf locally; it exists as a duplicate because `setup-python` can't read the
-      # asdf file. Keep the two in sync.
+      # `.tool-versions` is asdf's pin and `setup-python` reads it directly, so CI and
+      # local runs share one source of truth for the exact patch release.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version-file: .python-version
+          python-version-file: .tool-versions
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
