@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+title: mental-health-guard-harness
+message: >-
+  If you use this software, please cite it using the metadata below. Please also
+  cite the MindGuard paper listed under `references`, whose method this harness
+  implements.
+type: software
+authors:
+  - family-names: Weald
+    given-names: Ryan
+repository-code: "https://github.com/rally-dfs/mental-health-guard-harness"
+abstract: >-
+  A research harness for training and evaluating turn-level safety classifiers on
+  multi-turn mental health conversations: synthetic conversation generation, judge
+  labeling with majority voting, LoRA fine-tuning, and log-probability-based scoring
+  with AUROC and FPR-at-fixed-TPR metrics.
+keywords:
+  - safety-classification
+  - mental-health
+  - llm-evaluation
+  - knowledge-distillation
+license: Apache-2.0
+version: 0.0.1
+references:
+  - type: article
+    title: "MindGuard: Guardrail Classifiers for Multi-Turn Mental Health Support"
+    authors:
+      - family-names: Farinhas
+        name-suffix: et al.
+    year: 2026
+    doi: 10.48550/arXiv.2602.00950
+    url: "https://arxiv.org/abs/2602.00950"
+    notes: >-
+      The method this harness implements. Licensed CC BY-NC-SA 4.0; no text, prompts,
+      models, or evaluation data from that work are included in this repository.

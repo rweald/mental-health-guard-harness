@@ -1,0 +1,35 @@
+# GPU eval/model runtime. Not in the repo-root auto-load slot on purpose — invoke it
+# explicitly (the scripts pass `-f docker/eval/compose.yml`) so multiple stacks can
+# coexist. Relative paths below resolve from THIS file's directory (docker/eval/).
+#   ./scripts/eval/build.sh
+#   ./scripts/eval/run.sh <cmd>
+# Model weights come from the shared external `hf_cache` volume, so nothing re-downloads.
+name: mh-guard-eval    # stable project namespace (else compose derives "eval" from the dir)
+services:
+  eval:
+    build:
+      context: ../..            # repo root
+      dockerfile: docker/eval/Dockerfile
+    image: mh-guard-eval:25.09
+    # NGC's recommended shm/ulimits for PyTorch.
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    gpus: all
+    working_dir: /work
+    environment:
+      # Weights are already cached; stay offline so a run never blocks on a fetch.
+      # Override per-run (e.g. -e HF_HUB_OFFLINE=0) when pulling a new base model.
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+      - PYTHONPATH=/work/src
+    volumes:
+      # Shared HF weight cache (docker best practice on this box).
+      - hf_cache:/root/.cache/huggingface
+      # Live source — no rebuild on code change (repo root).
+      - ../..:/work
+
+volumes:
+  hf_cache:
+    external: true
