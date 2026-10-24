@@ -88,8 +88,17 @@ Outputs land in `results/eval/decisions/`. Per arm:
   cost, latency, failure counts, and how many rows exceeded Jev's long-context threshold
 
 **Rerunning the same command resumes**: answered rows (refusals included) are skipped, and
-only failed requests are retried. `--derive-only` rebuilds the scores files from the
-response cache with no API calls.
+only failed requests are retried. Cached answers are matched to rows by the content of
+the request, not by index, so a cache can never pair one rows file's answers with
+another's rows. `--derive-only` rebuilds the scores files from the response cache with no
+API calls.
+
+**Stopping is safe.** Ctrl-C cancels every queued request; only the few already in flight
+finish (and are cached). A bad key, exhausted credits or a forbidden response (401, 402,
+403) stops the run the same way rather than failing every remaining row.
+
+`--limit N` shares the arm's response cache but writes `<model>__limitN__…` scores files,
+so a partial run never replaces the full arm's results.
 
 ## 4. Metrics (local)
 
@@ -99,4 +108,7 @@ uv run python scripts/eval/report_metrics.py \
 ```
 
 Rows listed in the failures file are absent from the scores file, so these metrics treat
-them as excluded. Check each provenance's `failures` before reading the numbers.
+them as excluded — and an arm that refuses the hardest turns is then scored on an easier
+set. The scorer prints a `WARNING` whenever that happens, and each provenance records
+`failures_by_class` (positives vs safe). The comparison report shows both views:
+failures excluded, and failures scored as unsafe.

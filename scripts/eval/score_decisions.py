@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from mh_guard_harness import decisions
-from mh_guard_harness.models import OpenRouterDecisionModel
+from mh_guard_harness.models import DecisionAPIError, OpenRouterDecisionModel
 
 # One entry per arm. Every arm denies data collection, since the eval set is sensitive
 # and should not end up in anyone's training data. ZDR is on wherever OpenRouter offers
@@ -82,8 +82,12 @@ def main():
     spec = decisions.load_spec(args.spec)
     arm = MODELS[args.model]
     rows = _load_rows(args.rows, args.limit)
+    decisions.check_rows(rows)
     outdir = Path(args.outdir)
+    # The response cache is shared by full and --limit runs (rows match by content), but
+    # a --limit run's scores files get their own names so they can't replace the arm's.
     cache_path = outdir / f"{args.model}.responses.jsonl"
+    key = args.model if args.limit is None else f"{args.model}__limit{args.limit}"
     print(f"decision spec: {spec.filename} (sha256 {spec.sha256[:12]})", flush=True)
     print(f"{args.model} -> {arm['model']} over {len(rows)} rows from {args.rows}", flush=True)
 
@@ -97,15 +101,20 @@ def main():
             if n % 50 == 0 or n == total:
                 print(f"  {n}/{total} requests", flush=True)
 
-        made = decisions.run(
-            model, rows, spec, cache_path,
-            model_id=arm["model"], workers=args.workers, progress=progress,
-        )
+        try:
+            made = decisions.run(
+                model, rows, spec, cache_path,
+                model_id=arm["model"], workers=args.workers, progress=progress,
+            )
+        except DecisionAPIError as e:  # only fatal ones escape run()
+            sys.exit(f"stopped: {e}. Queued rows were not sent; fix it and rerun to resume.")
+        except KeyboardInterrupt:
+            sys.exit("interrupted: queued rows were not sent; rerun to resume.")
         print(f"made {made} requests (rows already answered were skipped)", flush=True)
 
     summary = decisions.derive(
         rows, cache_path, outdir,
-        key=args.model, spec=spec, model_id=arm["model"],
+        key=key, spec=spec, model_id=arm["model"],
         provenance_base={
             "model_key": args.model,
             "model": arm["model"],
@@ -115,6 +124,8 @@ def main():
         },
     )
     print(json.dumps(summary, indent=2))
+    for warning in summary["warnings"]:
+        print(f"WARNING: {warning}", file=sys.stderr)
     if summary["run"]["unanswered"]:
         print(f"{summary['run']['unanswered']} rows still unanswered — rerun the same "
               "command to retry them", file=sys.stderr)

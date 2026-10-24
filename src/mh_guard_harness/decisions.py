@@ -103,9 +103,10 @@ def load_spec(path) -> LoadedSpec:
         raise SpecError(f"decision spec at {path}: spec_version must be {SPEC_VERSION}")
     questions = data.get("questions")
     if not isinstance(questions, dict) or set(questions) != set(_EXPECTED_TYPES):
+        got = sorted(questions) if isinstance(questions, dict) else type(questions).__name__
         raise SpecError(
             f"decision spec at {path}: questions must be exactly "
-            f"{sorted(_EXPECTED_TYPES)}, got {sorted(questions or {})}"
+            f"{sorted(_EXPECTED_TYPES)}, got {got}"
         )
     for name, q in questions.items():
         where = f"decision spec at {path}, question {name!r}"
@@ -167,15 +168,17 @@ class Scored:
 
 
 def _finite_prob(x: Any) -> float | None:
-    try:
-        v = float(x)
-    except (TypeError, ValueError):
+    """A JSON number in [0, 1], else ``None``. Booleans and numeric strings are not
+    probabilities: ``true`` would otherwise score as 1.0 and quietly turn an arm's
+    scores into hard 0/1 labels."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
         return None
+    v = float(x)
     return v if math.isfinite(v) and 0.0 <= v <= 1.0 else None
 
 
 def _check_answer(answers: dict, name: str) -> tuple[dict | None, Scored | None]:
-    a = answers.get(name)
+    a = answers.get(name) if isinstance(answers, dict) else None
     if not isinstance(a, dict):
         return None, Scored(failure=INVALID, detail="no answer for this question")
     if a.get("type") == REFUSAL:
@@ -193,8 +196,10 @@ def score_choice3(answers: dict) -> Scored:
     if fail:
         return fail
     probs = a.get("probabilities")
-    if not isinstance(probs, dict) or set(probs) != set(CHOICE3_OPTIONS):
-        return Scored(failure=INVALID, detail=f"probability keys {sorted(probs or {})}")
+    if not isinstance(probs, dict):
+        return Scored(failure=INVALID, detail=f"probabilities is {type(probs).__name__}")
+    if set(probs) != set(CHOICE3_OPTIONS):
+        return Scored(failure=INVALID, detail=f"probability keys {sorted(map(str, probs))}")
     p = {k: _finite_prob(v) for k, v in probs.items()}
     total = sum(v for v in p.values() if v is not None)
     if any(v is None for v in p.values()) or total <= 0:
@@ -237,32 +242,74 @@ class CacheMismatchError(RuntimeError):
     """The cache was written under a different spec or model than this run's."""
 
 
-def read_cache(path, *, spec_sha256: str, model_id: str) -> dict[int, dict]:
-    """Latest cache entry per row index. Refuses a cache written under another spec or
-    model: mixing them would put two different questions into one scores file."""
+class CacheCorruptError(RuntimeError):
+    """A cache line other than the last one doesn't parse — not a crash mid-write."""
+
+
+def row_sha256(row: dict) -> str:
+    """Identity of a row's request: the hash of the state it sends. Cache entries are
+    matched to rows by this, never by index, so answers cached for one rows file (a
+    smoke set, say) can't be paired with a different file's rows that share an index."""
+    return hashlib.sha256(_canonical(build_state(row["prompt"])).encode("utf-8")).hexdigest()
+
+
+def read_cache(path, *, spec_sha256: str, model_id: str) -> dict[str, dict]:
+    """Latest cache entry per row hash. Refuses a cache written under another spec or
+    model: mixing them would put two different questions into one scores file.
+
+    A final line that doesn't parse is what a crash mid-write leaves behind, so it is
+    skipped with a warning and that row is simply pending again. A bad line anywhere
+    else is real corruption and raises."""
+    import warnings
+
     path = Path(path)
-    latest: dict[int, dict] = {}
+    latest: dict[str, dict] = {}
     if not path.exists():
         return latest
-    with path.open() as f:
-        for line in f:
-            if not line.strip():
-                continue
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+    for i, line in enumerate(lines):
+        try:
             entry = json.loads(line)
-            if entry["spec_sha256"] != spec_sha256 or entry["model_id"] != model_id:
-                raise CacheMismatchError(
-                    f"{path} was written for model {entry['model_id']!r} under spec "
-                    f"{entry['spec_sha256'][:12]}; this run is {model_id!r} under "
-                    f"{spec_sha256[:12]}. Use a fresh --outdir rather than mixing them."
-                )
-            latest[entry["index"]] = entry
+        except json.JSONDecodeError as e:
+            if i == len(lines) - 1:
+                warnings.warn(f"{path}: skipping a truncated final line; that row will "
+                              "be requested again", stacklevel=2)
+                break
+            raise CacheCorruptError(f"{path}: line {i + 1} is not valid JSON: {e}") from e
+        if entry.get("spec_sha256") != spec_sha256 or entry.get("model_id") != model_id:
+            raise CacheMismatchError(
+                f"{path} was written for model {entry.get('model_id')!r} under spec "
+                f"{str(entry.get('spec_sha256'))[:12]}; this run is {model_id!r} under "
+                f"{spec_sha256[:12]}. Use a fresh --outdir rather than mixing them."
+            )
+        if "row_sha256" not in entry:
+            raise CacheMismatchError(
+                f"{path} predates row-hash matching, so its entries can't be safely "
+                "paired with rows. Use a fresh --outdir."
+            )
+        latest[entry["row_sha256"]] = entry
     return latest
 
 
-def pending_rows(rows: list[dict], cache: dict[int, dict]) -> list[dict]:
+def pending_rows(rows: list[dict], cache: dict[str, dict]) -> list[dict]:
     """Rows with no successful response yet. Failed requests are retried on the next
     run; answered rows (refusals included — a refusal is an answer) are not."""
-    return [r for r in rows if not cache.get(r["index"], {}).get("ok")]
+    return [r for r in rows if not cache.get(row_sha256(r), {}).get("ok")]
+
+
+def check_rows(rows: list[dict]) -> None:
+    """Fail before any paid call if a row can't be turned into a request, or if two
+    rows share an index (the scores files would then be ambiguous)."""
+    seen = set()
+    for row in rows:
+        index = row.get("index")
+        if index in seen:
+            raise ValueError(f"duplicate row index {index!r}")
+        seen.add(index)
+        try:
+            build_state(row["prompt"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError(f"row {index!r} can't be sent: {e}") from e
 
 
 def run(
@@ -276,14 +323,19 @@ def run(
     progress=None,
 ) -> int:
     """Request a decision for every pending row and append each outcome to the cache.
-    Returns how many requests were made."""
+    Returns how many requests completed.
+
+    Stops sending on Ctrl-C or on a fatal API error (bad key, no credits): queued rows
+    are cancelled, the few already in flight finish and are cached, and the exception
+    propagates. Fatal errors are not cached — they say nothing about the row."""
     import threading
     import time
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from .io_utils import open_shared
     from .models import DecisionAPIError
 
+    check_rows(rows)
     cache_path = Path(cache_path)
     cache = read_cache(cache_path, spec_sha256=spec.sha256, model_id=model_id)
     todo = pending_rows(rows, cache)
@@ -295,6 +347,7 @@ def run(
         state = build_state(row["prompt"])
         entry = {
             "index": row["index"],
+            "row_sha256": row_sha256(row),
             "model_id": model_id,
             "spec_sha256": spec.sha256,
             "state_bytes": state_bytes(state),
@@ -304,6 +357,8 @@ def run(
             decision = model.decide(state, spec.questions)
             entry.update(ok=True, response=decision.raw)
         except DecisionAPIError as e:
+            if e.fatal:
+                raise
             entry.update(ok=False, error={"status": e.status, "message": str(e)[:1000]})
         entry["latency_s"] = round(time.monotonic() - t0, 4)
         line = json.dumps(entry) + "\n"
@@ -315,9 +370,15 @@ def run(
                 progress(done, len(todo), entry)
 
     with open_shared(cache_path, "a") as f:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            list(ex.map(_one, todo))
-    return len(todo)
+        ex = ThreadPoolExecutor(max_workers=workers)
+        try:
+            for fut in as_completed([ex.submit(_one, row) for row in todo]):
+                fut.result()
+        except BaseException:
+            ex.shutdown(wait=True, cancel_futures=True)
+            raise
+        ex.shutdown(wait=True)
+    return done
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -325,6 +386,10 @@ def _percentile(values: list[float], q: float) -> float | None:
         return None
     s = sorted(values)
     return s[min(len(s) - 1, int(round(q * (len(s) - 1))))]
+
+
+def _is_positive(label: str) -> bool:
+    return label != SAFE
 
 
 def derive(
@@ -338,16 +403,23 @@ def derive(
     provenance_base: dict,
 ) -> dict:
     """Write one scores file per question from the cache, plus a failures file and a
-    provenance sidecar per scores file. Rows that failed are left out of the scores file
-    (the metrics see only scored rows) and listed in the failures file, and the counts
-    land in provenance — a report can then show them excluded or scored as unsafe."""
+    provenance sidecar per scores file.
+
+    Rows that couldn't be scored are left out of the scores file and listed in the
+    failures file. That makes the scores file the "failures excluded" view; the
+    comparison report adds the "failures scored as unsafe" view from the failures file.
+    Excluding rows changes the set an arm is scored on — an arm that refuses the most
+    explicit turns gets an easier test — so provenance counts failures by gold class,
+    and the summary's ``warnings`` says so whenever any row was left out."""
     from collections import Counter
 
     from .io_utils import open_shared
 
+    check_rows(rows)
     cache = read_cache(cache_path, spec_sha256=spec.sha256, model_id=model_id)
     outdir = Path(outdir)
-    answered = [cache[r["index"]] for r in rows if cache.get(r["index"], {}).get("ok")]
+    entries = {r["index"]: cache.get(row_sha256(r)) for r in rows}
+    answered = [e for e in entries.values() if e and e.get("ok")]
     resolved = Counter(e["response"].get("model") for e in answered)
     providers = Counter(e["response"].get("provider") for e in answered)
     costs = [(e["response"].get("usage") or {}).get("cost") for e in answered]
@@ -366,24 +438,28 @@ def derive(
     }
 
     summary = {}
+    warnings = []
     failures_path = outdir / f"{key}.failures.jsonl"
     with open_shared(failures_path) as ff:
         for question, suffix in SCORE_FILES.items():
             scores_path = outdir / f"{key}__{suffix}_scores.jsonl"
             kinds: Counter = Counter()
+            by_class = {"positive": Counter(), "safe": Counter()}
             n_scored = 0
             with open_shared(scores_path) as sf:
                 for row in rows:
-                    entry = cache.get(row["index"])
+                    entry = entries[row["index"]]
                     if entry is None or not entry.get("ok"):
                         scored = Scored(
                             failure=ERROR,
                             detail=(entry or {}).get("error", {}).get("message", "not run"),
                         )
                     else:
-                        scored = SCORERS[question](entry["response"].get("answers") or {})
+                        scored = SCORERS[question](entry["response"].get("answers"))
                     if scored.failure:
                         kinds[scored.failure] += 1
+                        cls = "positive" if _is_positive(row["label"]) else "safe"
+                        by_class[cls][scored.failure] += 1
                         ff.write(json.dumps({
                             "index": row["index"], "question": question,
                             "kind": scored.failure, "detail": scored.detail,
@@ -400,14 +476,22 @@ def derive(
                         record.update(scored.extra)
                     sf.write(json.dumps(record) + "\n")
                     n_scored += 1
+            failures_by_class = {c: dict(k) for c, k in by_class.items()}
             prov = {
                 **provenance_base,
                 "question": question,
                 "scored": n_scored,
                 "failures": dict(kinds),
+                "failures_by_class": failures_by_class,
                 "run": run_stats,
                 "decision_spec": spec_provenance(spec),
             }
             scores_path.with_suffix(".provenance.json").write_text(json.dumps(prov, indent=2))
             summary[question] = {"path": str(scores_path), "scored": n_scored, **dict(kinds)}
-    return {"questions": summary, "run": run_stats}
+            if kinds:
+                warnings.append(
+                    f"{question}: {sum(kinds.values())} of {len(rows)} rows left out of "
+                    f"{scores_path.name} (positives {dict(by_class['positive'])}, safe "
+                    f"{dict(by_class['safe'])}) — metrics on this file exclude them"
+                )
+    return {"questions": summary, "run": run_stats, "warnings": warnings}

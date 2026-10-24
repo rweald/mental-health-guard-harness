@@ -319,3 +319,142 @@ def test_derive_marks_unrun_rows_unanswered(tmp_path):
                                model_id="vendor/m", provenance_base={})
     assert summary["run"]["unanswered"] == 2
     assert summary["questions"]["unsafe"]["scored"] == 2
+
+
+# --- review fixes --------------------------------------------------------------------
+
+
+def test_cached_answers_never_pair_with_a_different_rows_file(tmp_path):
+    # Two rows files that share indexes but not content (smoke vs testset): the second
+    # must not treat the first's answers as its own.
+    spec = decisions.load_spec(_write_spec(tmp_path))
+    cache = tmp_path / "m.responses.jsonl"
+    decisions.run(FakeDecider(), _rows(3), spec, cache, model_id="vendor/m")
+
+    other = [{**r, "prompt": [{"role": "user", "content": f"other {r['index']}"}]}
+             for r in _rows(3)]
+    c = decisions.read_cache(cache, spec_sha256=spec.sha256, model_id="vendor/m")
+    assert decisions.pending_rows(other, c) == other
+    summary = decisions.derive(other, cache, tmp_path, key="o", spec=spec,
+                               model_id="vendor/m", provenance_base={})
+    assert summary["run"]["unanswered"] == 3
+
+
+def test_cache_without_row_hashes_is_refused(tmp_path):
+    cache = tmp_path / "m.responses.jsonl"
+    cache.write_text(json.dumps({"index": 0, "model_id": "vendor/m", "spec_sha256": "s",
+                                 "ok": True, "response": {}}) + "\n")
+    with pytest.raises(decisions.CacheMismatchError, match="row-hash"):
+        decisions.read_cache(cache, spec_sha256="s", model_id="vendor/m")
+
+
+def test_truncated_final_cache_line_is_skipped_and_retried(tmp_path):
+    spec = decisions.load_spec(_write_spec(tmp_path))
+    rows = _rows(3)
+    cache = tmp_path / "m.responses.jsonl"
+    decisions.run(FakeDecider(), rows, spec, cache, model_id="vendor/m", workers=1)
+    text = cache.read_text()
+    cache.write_text(text[: len(text) - 20])  # crash mid-write of the last line
+
+    with pytest.warns(UserWarning, match="truncated"):
+        c = decisions.read_cache(cache, spec_sha256=spec.sha256, model_id="vendor/m")
+    assert len(c) == 2
+    second = FakeDecider()
+    with pytest.warns(UserWarning):
+        assert decisions.run(second, rows, spec, cache, model_id="vendor/m") == 1
+
+
+def test_corrupt_middle_cache_line_raises(tmp_path):
+    spec = decisions.load_spec(_write_spec(tmp_path))
+    cache = tmp_path / "m.responses.jsonl"
+    decisions.run(FakeDecider(), _rows(3), spec, cache, model_id="vendor/m")
+    lines = cache.read_text().splitlines()
+    lines[1] = lines[1][:10]
+    cache.write_text("\n".join(lines) + "\n")
+    with pytest.raises(decisions.CacheCorruptError, match="line 2"):
+        decisions.read_cache(cache, spec_sha256=spec.sha256, model_id="vendor/m")
+
+
+@pytest.mark.parametrize("bad_row", [
+    {"index": 9, "prompt": [{"role": "assistant", "content": "a"}]},
+    {"index": 9},
+    {"index": 0, "prompt": [{"role": "user", "content": "dup"}]},
+])
+def test_bad_rows_fail_before_any_request(tmp_path, bad_row):
+    spec = decisions.load_spec(_write_spec(tmp_path))
+    rows = _rows(4) + [{"label": "safe", "annotator_labels": {}, **bad_row}]
+    model = FakeDecider()
+    with pytest.raises(ValueError):
+        decisions.run(model, rows, spec, tmp_path / "c.jsonl", model_id="vendor/m")
+    assert model.calls == []
+
+
+class StoppingDecider(FakeDecider):
+    """Raises ``exc`` on the first call; counts how many calls were made at all."""
+
+    def __init__(self, exc):
+        super().__init__()
+        self.exc = exc
+
+    def decide(self, state, questions):
+        if not self.calls:
+            self.calls.append("stop")
+            raise self.exc
+        return super().decide(state, questions)
+
+
+@pytest.mark.parametrize("exc", [
+    DecisionAPIError("HTTP 402: no credits", status=402),
+    KeyboardInterrupt(),
+])
+def test_fatal_error_or_interrupt_stops_queued_requests(tmp_path, exc):
+    spec = decisions.load_spec(_write_spec(tmp_path))
+    cache = tmp_path / "m.responses.jsonl"
+    model = StoppingDecider(exc)
+    with pytest.raises(type(exc)):
+        decisions.run(model, _rows(50), spec, cache, model_id="vendor/m", workers=1)
+    assert len(model.calls) < 5  # the rest were cancelled, not sent
+    cached = cache.read_text().splitlines()
+    assert all(json.loads(x)["ok"] for x in cached)  # the fatal error wasn't cached
+
+
+def test_derive_warns_and_counts_failures_by_class(tmp_path):
+    spec = decisions.load_spec(_write_spec(tmp_path))
+    # row 0 is a positive (self-harm), row 1 is safe
+    _, summary = _run_and_derive(tmp_path, FakeDecider(refuse={0}), _rows(4), spec)
+    assert len(summary["warnings"]) == 2
+    assert "positives {'refusal': 1}" in summary["warnings"][0]
+    prov = json.loads((tmp_path / "m__yesno_scores.provenance.json").read_text())
+    assert prov["failures_by_class"] == {"positive": {"refusal": 1}, "safe": {}}
+
+    clean_dir = tmp_path / "clean"
+    clean_dir.mkdir()
+    _, clean = _run_and_derive(clean_dir, FakeDecider(), _rows(4), spec)
+    assert clean["warnings"] == []
+
+
+@pytest.mark.parametrize("probs", [[0.5, 0.5, 0.0], 0.5, None, "safe"])
+def test_choice3_non_dict_probabilities_are_invalid_not_a_crash(probs):
+    assert decisions.score_choice3(_choice(probs)).failure == decisions.INVALID
+
+
+@pytest.mark.parametrize("answers", [None, [], "x"])
+def test_non_dict_answers_are_invalid(answers):
+    assert decisions.score_yesno(answers).failure == decisions.INVALID
+    assert decisions.score_choice3(answers).failure == decisions.INVALID
+
+
+@pytest.mark.parametrize("value", [True, False, "0.5", "1"])
+def test_booleans_and_strings_are_not_probabilities(value):
+    s = decisions.score_yesno({"unsafe": {"type": "noul", "noul": value}})
+    assert s.failure == decisions.INVALID
+    probs = {"safe": value, "self_harm": 0.0, "harm_to_others": 0.0}
+    assert decisions.score_choice3(_choice(probs)).failure == decisions.INVALID
+
+
+def test_load_spec_questions_as_list_is_a_spec_error(tmp_path):
+    def mutate(s):
+        s["questions"] = [{"type": "noul"}]
+
+    with pytest.raises(decisions.SpecError, match="got list"):
+        decisions.load_spec(_write_spec(tmp_path, _spec_with(mutate)))

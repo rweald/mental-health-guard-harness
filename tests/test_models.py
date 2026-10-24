@@ -224,3 +224,68 @@ def test_scripted_decider_satisfies_protocol():
             return Decision(answers={})
 
     assert isinstance(D(), DecisionModel)
+
+
+def test_decision_model_retries_408():
+    statuses = iter([408, 200])
+
+    def handler(request):
+        status = next(statuses)
+        return httpx.Response(status, json={"answers": {}} if status == 200 else {})
+
+    assert _decision_model(handler).decide("s", {}).answers == {}
+
+
+def test_decision_model_honours_retry_after(monkeypatch):
+    slept = []
+    monkeypatch.setattr("mh_guard_harness.models.time.sleep", slept.append)
+    statuses = iter([429, 429, 200])
+
+    def handler(request):
+        status = next(statuses)
+        if status == 200:
+            return httpx.Response(200, json={"answers": {}})
+        return httpx.Response(429, headers={"Retry-After": "7" if not slept else "999"})
+
+    _decision_model(handler).decide("s", {})
+    assert slept == [7.0, 60.0]  # honoured, and capped
+
+
+@pytest.mark.parametrize("status", [401, 402, 403])
+def test_account_errors_are_fatal_and_not_retried(status):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(status, json={"error": {"code": status, "message": "no"}})
+
+    with pytest.raises(DecisionAPIError) as e:
+        _decision_model(handler).decide("s", {})
+    assert e.value.fatal and len(calls) == 1
+
+
+def test_row_errors_are_not_fatal():
+    def handler(request):
+        return httpx.Response(400, json={"error": {"code": 400, "message": "bad"}})
+
+    with pytest.raises(DecisionAPIError) as e:
+        _decision_model(handler).decide("s", {})
+    assert not e.value.fatal
+
+
+@pytest.mark.parametrize("response, why", [
+    (httpx.Response(200, json={"error": {"code": 502, "message": "upstream"}}), "error"),
+    (httpx.Response(200, text="<html>gateway</html>"), "not JSON"),
+    (httpx.Response(200, json=[1, 2]), "not a JSON object"),
+    (httpx.Response(200, json={"model": "m"}), "no answers"),
+])
+def test_unusable_200_is_retried_then_raised_not_cached(response, why):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return response
+
+    with pytest.raises(DecisionAPIError, match=why):
+        _decision_model(handler, max_retries=1).decide("s", {})
+    assert len(calls) == 2
