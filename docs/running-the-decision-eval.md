@@ -112,3 +112,23 @@ them as excluded — and an arm that refuses the hardest turns is then scored on
 set. The scorer prints a `WARNING` whenever that happens, and each provenance records
 `failures_by_class` (positives vs safe). The comparison report shows both views:
 failures excluded, and failures scored as unsafe.
+
+## 5. Compare against the baselines (local)
+
+```bash
+uv run python scripts/eval/compare_decisions.py
+uv run python scripts/eval/compare_decisions.py --json > results/eval/decisions/comparison.json
+```
+
+Reads every full-run arm under `results/eval/decisions/` alongside MindGuard-8B
+(`results/eval/mindguard8b_scores.jsonl`) and the GLM-5.2 fine-tune (its three seed files,
+averaged per row for the bootstrap). It refuses to run if the arms were scored under
+different specs, if any file's rows disagree with the gold labels, or if an arm's scored
+and failed rows don't cover the whole testset.
+
+It reports each model and question under both failure policies, cost per 1k turns and
+latency, the three-way confusion, and a paired bootstrap of every result against both
+baselines and of each model's two questions against each other. Each bootstrap p-value
+comes with a Holm-adjusted value across the whole report; with about 90 comparisons on 42
+positives, read significance from the adjusted one. The bootstrap uses every core and
+takes under a minute at the default 10,000 resamples.
