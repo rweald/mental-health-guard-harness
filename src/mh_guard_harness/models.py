@@ -9,11 +9,15 @@ not a code change.
 OpenRouter's API is OpenAI-compatible, so a single adapter covers GLM-4.6, GLM-5.2,
 and DeepSeek V4 Flash via a base-URL + model-id swap. Kept deliberately tiny (~protocol
 + one concrete class): we want raw provider responses in hand, not a framework.
+
+Decision models get a second, parallel protocol (``DecisionModel``) at the bottom of
+the module: they answer typed questions with probabilities instead of generating text.
 """
 
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -101,3 +105,108 @@ def _extract_text(resp: Any) -> str:
                 parts.append(getattr(p, "text", "") or "")
         return "".join(parts)
     return str(content)
+
+
+# --- Decision models -----------------------------------------------------------------
+#
+# Decision models (Jev, Clef, OpenAI Decisions, ...) do not generate text: they take a
+# ``state`` plus a map of typed questions and return a probability per allowed answer.
+# That is a different shape from ``Model.complete``, so it gets its own protocol rather
+# than being bent into a text completion. OpenRouter serves all of them behind one
+# endpoint (``POST /api/alpha/decisions``), so one adapter covers every arm.
+
+
+@dataclass
+class Decision:
+    """One decision-model response. ``answers`` is keyed by question name; ``raw`` is
+    the whole parsed response body (resolved model version, provider, usage/cost)."""
+
+    answers: dict[str, Any]
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class DecisionModel(Protocol):
+    """Anything that answers typed questions about a state."""
+
+    def decide(self, state: Any, questions: dict[str, Any]) -> Decision: ...
+
+
+class DecisionAPIError(RuntimeError):
+    """A decisions request that failed after retries. ``status`` is the HTTP status, or
+    ``None`` for a transport failure (timeout, connection reset)."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+# OpenRouter's documented transient statuses: rate limit, upstream failure/overload,
+# edge timeout. Anything else (400 bad request, 402 credits, 413 too large) won't fix
+# itself on retry, so it surfaces immediately.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 524, 529})
+
+
+@dataclass
+class OpenRouterDecisionModel:
+    """Adapter over OpenRouter's Decisions endpoint. ``model`` is the OpenRouter id
+    (e.g. ``typesafe/jev-1.14``). ``provider`` is passed through as OpenRouter's
+    provider-routing object — pin it so a run can't drift between hosts that serve
+    different quantizations or context limits of the same model."""
+
+    model: str
+    provider: dict[str, Any] | None = None
+    api_key: str | None = None  # defaults to $OPENROUTER_API_KEY
+    base_url: str = "https://openrouter.ai/api/alpha"
+    timeout: float = 60.0
+    max_retries: int = 3
+    backoff_s: float = 2.0  # doubles per retry
+    transport: Any = None  # httpx transport override, for tests
+    _client: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        import httpx
+
+        key = self.api_key or os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            raise RuntimeError("OPENROUTER_API_KEY not set (and no api_key passed)")
+        self._client = httpx.Client(
+            base_url=self.base_url,
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=self.timeout,
+            transport=self.transport,
+        )
+
+    def decide(self, state: Any, questions: dict[str, Any]) -> Decision:
+        import httpx
+
+        body: dict[str, Any] = {"model": self.model, "state": state, "questions": questions}
+        if self.provider:
+            body["provider"] = self.provider
+
+        last_error: DecisionAPIError | None = None
+        for attempt in range(self.max_retries + 1):
+            if attempt:
+                time.sleep(self.backoff_s * 2 ** (attempt - 1))
+            try:
+                resp = self._client.post("/decisions", json=body)
+            except httpx.TransportError as e:
+                last_error = DecisionAPIError(f"transport error: {e!r}")
+                continue
+            if resp.status_code == 200:
+                data = resp.json()
+                return Decision(answers=data.get("answers") or {}, raw=data)
+            last_error = DecisionAPIError(
+                f"HTTP {resp.status_code}: {_error_message(resp)}", status=resp.status_code
+            )
+            if resp.status_code not in _RETRYABLE_STATUSES:
+                break
+        raise last_error
+
+
+def _error_message(resp: Any) -> str:
+    """OpenRouter's ``{"error": {"message": ...}}``, else the raw body (truncated)."""
+    try:
+        return str(resp.json()["error"]["message"])
+    except Exception:
+        return resp.text[:500]

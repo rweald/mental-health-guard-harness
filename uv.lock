@@ -481,6 +481,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "datasets" },
+    { name = "httpx" },
     { name = "numpy" },
     { name = "openai" },
     { name = "pandas" },
@@ -509,6 +510,7 @@ torch-cpu = [
 requires-dist = [
     { name = "anthropic" },
     { name = "datasets" },
+    { name = "httpx" },
     { name = "numpy" },
     { name = "openai" },
     { name = "pandas" },
