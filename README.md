@@ -75,7 +75,8 @@ scoring and metrics — along with which parts are load-bearing for the method a
 free parameters.
 
 Operator runbooks: [running the eval](docs/running-the-eval.md) ·
-[running the fine-tune](docs/running-the-finetune.md).
+[running the fine-tune](docs/running-the-finetune.md) ·
+[running the decision-model eval](docs/running-the-decision-eval.md).
 
 ## Validation lineage
 

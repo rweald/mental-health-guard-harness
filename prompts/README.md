@@ -11,6 +11,11 @@ is committed — everything in this directory except this README is gitignored.
 Each file must contain its placeholder **exactly once**. That is the only structural
 requirement — the rest of the prompt is yours to write.
 
+Decision-model scoring takes a third, optional file, `decision_spec.json`: the typed
+questions sent to decision models instead of a prompt template. It has no placeholder;
+its structure is validated by `mh_guard_harness.decisions` — see
+[running the decision-model eval](../docs/running-the-decision-eval.md).
+
 ## Why they are not included
 
 The reference versions of both prompts come from MindGuard (Farinhas et al.,
