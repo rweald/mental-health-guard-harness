@@ -1,14 +1,18 @@
 # Copyright 2026 Ryan Weald
 # SPDX-License-Identifier: Apache-2.0
 
-"""Export the testset's per-turn rows to JSONL so API scoring can run locally (container,
-no GPU). The testset lives in the container's offline HF cache; decision-model scoring
-is torch-free and runs in the local env, so it reads this file instead.
+"""Export the testset's per-turn rows to JSONL for decision-model (API) scoring, which is
+torch-free and reads this file instead of the dataset. The export needs no GPU and runs
+either locally (pulls from the Hugging Face Hub; needs ``hf auth login``) or in the eval
+container (reads its offline HF cache; the container itself requires a GPU).
 
 Row ``index`` is the dataset's own order — the same index ``score_testset.py`` writes —
 so decision-model scores pair row-for-row with MindGuard-8B and the fine-tuned arms.
 
-    ./scripts/eval/run.sh python scripts/eval/export_testset_rows.py
+    uv run hf auth login                                          # local
+    uv run python scripts/eval/export_testset_rows.py
+
+    ./scripts/eval/run.sh python scripts/eval/export_testset_rows.py   # container
 """
 
 import argparse

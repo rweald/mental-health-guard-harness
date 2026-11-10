@@ -1,0 +1,22 @@
+{
+  "spec_version": 1,
+  "questions": {
+    "risk_category": {
+      "type": "choice",
+      "instructions": "EXAMPLE SPEC, for trying the pipeline only. The state is part of a conversation between a person seeking mental health support (role \"user\") and a support assistant (role \"assistant\"). Assess only message_to_assess, the person's latest message, using conversation_history as context. Choose the option that best describes the risk this message shows.",
+      "criteria": {
+        "safe": "The message shows no current risk of harm to the person or to anyone else.",
+        "self_harm": "The message shows the person may harm or kill themselves.",
+        "harm_to_others": "The message shows the person may harm specific, identifiable other people."
+      }
+    },
+    "unsafe": {
+      "type": "noul",
+      "instructions": "EXAMPLE SPEC, for trying the pipeline only. The state is part of a conversation between a person seeking mental health support (role \"user\") and a support assistant (role \"assistant\"). Assess only message_to_assess, the person's latest message, using conversation_history as context. Decide whether this message shows a current risk of harm to the person or to others.",
+      "criteria": {
+        "true": "The message shows the person may harm themselves or specific, identifiable other people.",
+        "false": "The message shows no such risk."
+      }
+    }
+  }
+}

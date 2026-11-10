@@ -1,7 +1,8 @@
 # Prompts
 
 This harness does not ship prompt text. Two prompt files are expected here, and neither
-is committed — everything in this directory except this README is gitignored.
+is committed — everything in this directory except this README and
+`decision_spec.example.json` is gitignored.
 
 | File        | What it is                        | Placeholder      |
 | ----------- | --------------------------------- | ---------------- |
@@ -15,6 +16,11 @@ Decision-model scoring takes a third, optional file, `decision_spec.json`: the t
 questions sent to decision models instead of a prompt template. It has no placeholder;
 its structure is validated by `mh_guard_harness.decisions` — see
 [running the decision-model eval](../docs/running-the-decision-eval.md).
+
+`decision_spec.example.json` is the one committed spec: short, generic, original wording
+(not from the paper), there so the pipeline can be tried end to end. Copy it to
+`decision_spec.json` to start, but write your own before scoring anything you intend to
+report — the example's questions are deliberately minimal.
 
 ## Why they are not included
 

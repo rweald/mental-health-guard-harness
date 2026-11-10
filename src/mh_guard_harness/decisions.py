@@ -14,8 +14,9 @@ usual seam-contract JSONL, so metrics and comparison code run on either unchange
 
 Both are first-class results. Neither is picked over the other after the fact.
 
-What the questions *say* is not in this repository — like the guard and judge prompts,
-it is loaded from a user-supplied JSON file (the "decision spec"). This module fixes
+What the questions *say* is user-supplied — like the guard and judge prompts, it is
+loaded from a JSON file (the "decision spec"); the repo carries only a minimal example,
+``prompts/decision_spec.example.json``, for trying the pipeline. This module fixes
 only the structure: question names, types, and option keys, which the scorer depends on.
 The spec's hash goes into provenance, and the scorer refuses to resume a run under a
 different spec, so every model in a comparison is scored with the identical questions.
