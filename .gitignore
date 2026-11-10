@@ -38,9 +38,12 @@ data/scenarios/*
 
 # Prompt content is supplied by the user and never committed — the reference prompts
 # are under a different licence than this repository (see prompts/README.md). Only the
-# README explaining what goes here is tracked.
+# README explaining what goes here is tracked, plus a deliberately generic example
+# decision spec (original text, not a reference prompt) so the decision eval can be tried
+# without writing one first.
 /prompts/*
 !/prompts/README.md
+!/prompts/decision_spec.example.json
 
 # Release-check tooling: greps for prompt fragments, so it stays out of the tree.
 /release-check/

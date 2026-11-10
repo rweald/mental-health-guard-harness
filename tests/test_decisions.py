@@ -8,6 +8,7 @@ committed, like the guard and judge prompts.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -55,6 +56,13 @@ def test_load_spec_accepts_fixture(tmp_path):
     assert set(spec.questions) == {"risk_category", "unsafe"}
     assert spec.filename == "spec.json"
     assert len(spec.sha256) == 64
+
+
+def test_committed_example_spec_is_valid():
+    # The one spec in the repo, so the eval runbook's "copy the example" step works.
+    path = Path(__file__).resolve().parents[1] / "prompts" / "decision_spec.example.json"
+    spec = decisions.load_spec(path)
+    assert set(spec.questions) == {"risk_category", "unsafe"}
 
 
 def test_spec_hash_ignores_formatting_but_not_text(tmp_path):

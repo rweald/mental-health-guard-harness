@@ -42,15 +42,41 @@ fixes its structure (question names, types, option keys) and validates it before
 call. Its hash is recorded in each run's provenance, and a run refuses to resume under a
 different spec, so every arm is scored with the same questions.
 
-## 1. Export the testset rows (container, no GPU)
+To try the pipeline without writing one, start from the committed example:
 
-The testset lives in the container's offline HF cache; scoring runs locally.
+```bash
+cp prompts/decision_spec.example.json prompts/decision_spec.json
+```
+
+The example is deliberately minimal. It is fine for the smoke run; write your own spec
+before scoring the testset for results you intend to report, and freeze it first — a
+different spec is a different hash, and runs scored under the two don't compare.
+
+## 1. Export the testset rows
+
+The export itself never uses a GPU. Pick whichever environment you have; both write the
+same file.
+
+**Locally (no GPU needed).** Downloads the testset from the Hugging Face Hub, so log in
+first (once per machine):
+
+```bash
+uv run hf auth login
+uv run python scripts/eval/export_testset_rows.py
+```
+
+**In the eval container (GPU machine).** Reads the testset from the container's offline
+HF cache, so no login is needed if the cache is already populated (add `--online` after
+`run.sh` if it isn't):
 
 ```bash
 ./scripts/eval/run.sh python scripts/eval/export_testset_rows.py
 ```
 
-Writes `results/eval/testset_rows.jsonl`. Row indexes match `score_testset.py`, so the
+The container requires a GPU to start, so on a machine without one use the local
+command.
+
+Either way, the export writes `results/eval/testset_rows.jsonl`. Row indexes match `score_testset.py`, so the
 decision-model scores pair row-for-row with MindGuard-8B and the fine-tuned arms.
 
 ## 2. Smoke on synthetic dialogues (paid, cents)
